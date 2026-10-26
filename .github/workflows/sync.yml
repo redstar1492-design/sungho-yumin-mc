@@ -1,0 +1,65 @@
+name: 구글 문서 → 페이지 반영
+
+# 구글 문서(링크가 있는 사람 보기)를 10분마다 읽어, 내용이 바뀌었을 때만 페이지를 다시 올린다.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  DOC_ID: 1gViSvvPBAZDhuslVFNseBgi5CNN0xlYiHd7gb2Ngmh0
+  SITE_URL: https://redstar1492-design.github.io/sungho-yumin-mc/
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 구글 문서 가져오기
+        run: curl -sfL "https://docs.google.com/document/d/${DOC_ID}/export?format=html" -o doc.html
+      - name: 페이지 만들기
+        id: build
+        run: |
+          node tools/build.cjs doc.html _site/index.html | tee build.log
+          echo "hash=$(grep -o 'hash=[0-9a-f]*' build.log | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+      - name: 바뀌었는지 확인
+        id: check
+        run: |
+          live=$(curl -sfL "$SITE_URL" | grep -o 'name="doc-hash" content="[0-9a-f]*"' | grep -o '[0-9a-f]\{16\}' || true)
+          if [ "${{ github.event_name }}" != "schedule" ] || [ "$live" != "${{ steps.build.outputs.hash }}" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "live=$live new=${{ steps.build.outputs.hash }}"
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.check.outputs.changed == 'true'
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
